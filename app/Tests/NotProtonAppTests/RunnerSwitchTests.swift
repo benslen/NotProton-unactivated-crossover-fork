@@ -12,16 +12,10 @@ struct RunnerPrepareTests {
     private static let preview41069 = SupportedRunners.all.first { $0.id == "27.0.0.41069" }!
     private static let fex41069 = SupportedRunners.all.first { $0.id == "27.0.0.41069-fex" }!
 
-    private static let licensed = CrossOverLicense.Status(
-        licensed: true, detail: "CrossOver is activated.", diagnostic: "test"
-    )
-    private static let unlicensed = CrossOverLicense.Status(
-        licensed: false, detail: CrossOverLicense.notActivated, diagnostic: "test"
-    )
-
     private static let runScript = Data("#!/bin/sh\n".utf8)
 
     private final class Calls: @unchecked Sendable {
+        var verified: [String] = []
         var staged: [String] = []
         var patched: [String] = []
     }
@@ -61,7 +55,7 @@ struct RunnerPrepareTests {
         _ build: RunnerBuild,
         runners: URL,
         calls: Calls,
-        license: CrossOverLicense.Status = licensed,
+        failVerify: Bool = false,
         failPatch: Bool = false
     ) throws -> RunnerSetup.Outcome {
         try RunnerSetup.prepare(
@@ -75,8 +69,10 @@ struct RunnerPrepareTests {
                 try Self.runScript.write(to: script)
                 return script
             },
-            license: { _ in license },
-            verify: { _, _ in },
+            verify: { build, _ in
+                calls.verified.append(build.id)
+                if failVerify { throw StepFailure(step: "test", detail: "verification failed") }
+            },
             stage: { build, _, bridge in
                 calls.staged.append(build.id)
                 try Self.writeStaged(for: build, into: bridge)
@@ -343,17 +339,46 @@ struct RunnerPrepareTests {
         #expect(toolList(runners) == nil)
     }
 
-    @Test("Preparing is refused when CrossOver is not activated")
-    func refusesUnlicensed() throws {
+    @Test("Preparing works without CrossOver activation files")
+    func preparesWithoutActivation() throws {
         let runners = try makeRunners(cloning: [Self.rosetta, Self.fex])
         defer { try? FileManager.default.removeItem(at: runners) }
 
+        let root = SupportPaths.clonedRoot(forBuild: Self.fex.id, runners: runners)
+        #expect(!FileManager.default.fileExists(
+            atPath: root.appending(path: "share/crossover/data/tie.pub").path(percentEncoded: false)
+        ))
+
         let calls = Calls()
-        #expect(throws: StepFailure.self) {
-            try prepare(Self.fex, runners: runners, calls: calls, license: Self.unlicensed)
+        let outcome = try prepare(Self.fex, runners: runners, calls: calls)
+
+        #expect(outcome.toolsChanged)
+        #expect(calls.verified == [Self.fex.id])
+        #expect(calls.staged == [Self.fex.id])
+        #expect(calls.patched == [Self.fex.id])
+        #expect(toolList(runners) == CompatToolList.contents(
+            SupportedRunners.tools(for: [Self.rosetta, Self.fex])
+        ))
+        for tool in SupportedRunners.tools(for: [Self.rosetta, Self.fex]) {
+            let run = runners.appending(path: "compatibilitytools.d/\(tool.name)/run")
+            #expect(try Data(contentsOf: run) == Self.runScript)
+        }
+    }
+
+    @Test("Preparing still refuses a clone that fails verification")
+    func refusesInvalidClone() throws {
+        let runners = try makeRunners(cloning: [Self.fex])
+        defer { try? FileManager.default.removeItem(at: runners) }
+
+        let calls = Calls()
+        let failure = try #require(throws: StepFailure.self) {
+            try prepare(Self.fex, runners: runners, calls: calls, failVerify: true)
         }
 
+        #expect(failure.detail == "verification failed")
+        #expect(calls.verified == [Self.fex.id])
         #expect(calls.staged.isEmpty)
+        #expect(calls.patched.isEmpty)
         #expect(toolList(runners) == nil)
     }
 
@@ -394,7 +419,6 @@ struct SetupSourceTests {
             steamRunning: false,
             updateBlocked: false,
             crossOver: installs,
-            crossOverLicense: [:],
             runner: runner,
             payload: PayloadInspector.inspect(bridge: FileManager.default.temporaryDirectory, builds: [])
         )
