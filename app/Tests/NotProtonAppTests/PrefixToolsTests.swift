@@ -27,6 +27,21 @@ struct PrefixToolsTests {
         )
     }
 
+    @Test("Log paths match where compat_run.sh writes them")
+    func logPathsMatchRunScript() throws {
+        let source = try Self.compatSource()
+        #expect(source.contains(#"log="$STEAM_COMPAT_DATA_PATH/notproton-run.log""#))
+        #expect(source.contains(#"loader_root="$HOME/Library/Application Support/notproton/launchers/$app_id""#))
+        #expect(source.contains(#"wine_log="$loader_root/notproton-wine.log""#))
+
+        let prefix = samplePrefix()
+        let launchers = URL(filePath: "/tmp/launchers")
+        #expect(PrefixLog.launch.url(for: prefix, launchers: launchers) == prefix.root.appending(path: "notproton-run.log"))
+        #expect(PrefixLog.wine.url(for: prefix, launchers: launchers).path(percentEncoded: false)
+            == "/tmp/launchers/1574480/notproton-wine.log")
+        #expect(SupportPaths.launchers.path(percentEncoded: false).hasSuffix("Application Support/notproton/launchers"))
+    }
+
     @Test("The runner variables are the ones RUN_SCRIPT exports")
     func matchesRunScript() throws {
         // A tool under a stale copy of the runner layout writes registry keys the game side then
@@ -179,7 +194,6 @@ struct PrefixToolsTests {
         let exe = dir.appending(path: "setup.exe")
         try Data("MZ".utf8).write(to: exe)
 
-        // No runner, which is the same refusal opening a tool gets.
         #expect(throws: StepFailure.self) {
             try PrefixTools.run(exe, in: samplePrefix(), runner: dir)
         }
@@ -189,6 +203,67 @@ struct PrefixToolsTests {
         #expect(throws: StepFailure.self) {
             try PrefixTools.run(URL(filePath: "/bin/ls"), in: samplePrefix())
         }
+    }
+
+    @Test("Winetricks refuses before it runs when it cannot work or would leave the prefix")
+    func winetricksRefusesEarly() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "np-winetricks-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = dir.appending(path: "winetricks")
+
+        #expect(PrefixTools.winetricksVerbs("  vcrun2022\tcorefonts \n") == ["vcrun2022", "corefonts"])
+
+        func refusal(_ verbs: String) -> String? {
+            do {
+                _ = try PrefixTools.winetricks(
+                    PrefixTools.winetricksVerbs(verbs), in: samplePrefix(), script: script, runner: dir)
+                return nil
+            } catch {
+                return (error as? StepFailure)?.detail
+            }
+        }
+        #expect(refusal(" ")?.contains("at least one verb") == true)
+        #expect(refusal("vcrun2022 annihilate")?.contains("annihilate") == true)
+        #expect(refusal("prefix=other corefonts")?.contains("prefix=other") == true)
+        #expect(refusal("--self-update")?.contains("--self-update") == true)
+        #expect(refusal("corefonts")?.contains("No compatibility tool") == true)
+        #expect(!FileManager.default.fileExists(
+            atPath: samplePrefix().root.appending(path: PrefixTools.winetricksLogName).path(percentEncoded: false)))
+    }
+
+    @Test("Winetricks accepts a Visual C++ installer that finds a newer runtime already installed")
+    func winetricksAcceptsNewerVisualCpp() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "np-winetricks-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let library = SteamLibrary(root: dir.appending(path: "library"))
+        let prefix = WinePrefix(appID: "2075800", name: "Game", library: library, lastUsed: nil)
+        let runner = dir.appending(path: "runner")
+        let unix = runner.appending(path: "lib/wine/x86_64-unix")
+        for folder in [prefix.pfx, unix, dir.appending(path: "cache")] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        func executable(_ url: URL, _ body: String) throws {
+            try Data(body.utf8).write(to: url)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path(percentEncoded: false))
+        }
+        // Wine passes on only the low byte of 1638 (ERROR_PRODUCT_VERSION).
+        try executable(unix.appending(path: "wine"), "#!/bin/sh\ncase \"$1\" in *.exe) exit 102 ;; esac\nexit 102\n")
+        let script = dir.appending(path: "cache/winetricks")
+        try executable(script, """
+            #!/bin/sh
+            "$WINE" vc_redist.x86.exe /q; echo "x86 $?"
+            "$WINE" 'C:\\redist\\VC_redist.x64.exe' /q; echo "x64 $?"
+            "$WINE" regedit.exe /S x.reg; echo "regedit $?"
+            echo "bin $WINE_BIN"
+            """)
+
+        let log = try PrefixTools.winetricks(["vcrun2022"], in: prefix, script: script, runner: runner)
+        let output = try String(contentsOf: log, encoding: .utf8)
+        #expect(output.contains("x86 236"))
+        #expect(output.contains("x64 236"))
+        #expect(output.contains("regedit 102"), "only installers have the code rewritten")
+        #expect(output.contains("bin \(unix.appending(path: "wine").path(percentEncoded: false))"))
     }
 
     @Test("Every kind offered by the file picker is a kind that can be run")

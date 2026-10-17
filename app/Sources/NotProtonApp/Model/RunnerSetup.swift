@@ -12,10 +12,10 @@ enum RunnerSetup {
 
         var label: String {
             switch self {
-            case .cloning: "Copying CrossOver"
-            case .staging: "Patching"
-            case .patching: "Installing compatibility tool"
-            case .finished: "Done"
+            case .cloning: String(localized: "Copying CrossOver")
+            case .staging: String(localized: "Patching")
+            case .patching: String(localized: "Installing compatibility tool")
+            case .finished: String(localized: "Done")
             }
         }
     }
@@ -39,7 +39,7 @@ enum RunnerSetup {
         return try prepare(build, report: report)
     }
 
-    static let prepareStep = "Set up compatibility tool"
+    static let prepareStep = String(localized: "Set up compatibility tool")
 
     static func prepare(
         _ build: RunnerBuild,
@@ -59,7 +59,7 @@ enum RunnerSetup {
     ) throws -> Outcome {
         guard RunnerInstaller.hasClone(forBuild: build.id, runners: runners) else {
             throw StepFailure(
-                step: prepareStep, detail: "Build \(build.displayVersion) has not been set up."
+                step: prepareStep, detail: String(localized: "Build \(build.displayVersion) has not been set up.")
             )
         }
 

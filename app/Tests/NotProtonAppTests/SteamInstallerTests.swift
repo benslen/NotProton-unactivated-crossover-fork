@@ -14,7 +14,7 @@ struct SteamInstallerTests {
         return try await SteamRepair.stage(
             bundle,
             bases: manifest.bases,
-            downloads: SupportPaths.packageDownloads,
+            downloads: try isolatedValveDownloads(in: work),
             work: work.appending(path: "staging")
         )
     }
@@ -71,6 +71,10 @@ struct SteamInstallerTests {
         var deployedVersion: URL { support.appending(path: "dylib.version") }
         var backups: URL { support.appending(path: "backups") }
         var bridge: URL { support.appending(path: "bridge") }
+        var modifications: SteamModifications {
+            SteamModifications(file: work.appending(path: "steam-bundles.json"),
+                               legacyRecord: DeploymentContent.record(beside: deployedVersion))
+        }
     }
 
     private func fixture(into work: URL) async throws -> Fixture {
@@ -115,6 +119,8 @@ struct SteamInstallerTests {
             deployedVersion: fixture.deployedVersion,
             backups: fixture.backups,
             compatTools: fixture.work.appending(path: "compatibilitytools.d"),
+            lockFolder: fixture.work,
+            modifications: fixture.modifications,
             runnerIsRunning: { _ in running },
             verifyRunner: verifyRunner,
             patchRunner: { _, _, _ in },
@@ -205,6 +211,32 @@ struct SteamInstallerTests {
         // rather than editing it back.
         let described = try Shell.run("/usr/bin/codesign", ["-dvv", fixture.app.path(percentEncoded: false)])
         #expect(!(described.stdout + described.stderr).contains("TeamIdentifier=MXGJJ98X76"))
+    }
+
+    @Test("A Steam carrying Finder info or a resource fork still installs, and only those are cleared")
+    func installsOverFinderData() async throws {
+        let work = try scratchDirectory("install")
+        defer { try? FileManager.default.removeItem(at: work) }
+        let fixture = try await self.fixture(into: work)
+        let app = fixture.app.path(percentEncoded: false)
+        let icon = fixture.app.appending(path: "Icon\r").path(percentEncoded: false)
+        try Data().write(to: URL(filePath: icon))
+        try Shell.check("/usr/bin/xattr", ["-w", "com.apple.ResourceFork", "icns", icon])
+        try Shell.check("/usr/bin/xattr", ["-wx", "com.apple.FinderInfo", String(repeating: "0", count: 64), icon])
+        try Shell.check("/usr/bin/xattr", [
+            "-wx", "com.apple.FinderInfo", "0000000000000000040000000000000000000000000000000000000000000000", app,
+        ])
+        try Shell.check("/usr/bin/xattr", ["-w", "com.notproton.keep", "1", app])
+        #expect(!(try Shell.run("/usr/bin/codesign", ["-f", "-s", "-", app])).succeeded)
+
+        _ = try install(fixture)
+
+        let verified = try Shell.run("/usr/bin/codesign", ["--verify", "--strict", app])
+        #expect(verified.succeeded, "\(verified.stderr)")
+        let left = try Shell.run("/usr/bin/xattr", ["-lr", app]).stdout
+        #expect(!left.contains("com.apple.FinderInfo"))
+        #expect(!left.contains("com.apple.ResourceFork"))
+        #expect(left.contains("com.notproton.keep"))
     }
 
     @Test("An insert belonging to something else stops the install and is left alone")
@@ -468,6 +500,41 @@ struct SteamInstallerTests {
         #expect(build.builtAt == 100)
         #expect(build.version == "9.9.9-test")
         #expect(build.dylibHashes == (try MachOBuild.hashesIgnoringSignature(of: fixture.payload.dylib)))
+        #expect(try fixture.modifications.paths().map(\.path) == [fixture.app.standardizedFileURL.path])
+    }
+
+    @Test("A failed install records the bundle before copying its dylib")
+    func tracksFailedInstallation() async throws {
+        let work = try scratchDirectory("install-failure-record")
+        defer { try? FileManager.default.removeItem(at: work) }
+        let fixture = try await self.fixture(into: work)
+        try FileManager.default.createDirectory(at: fixture.support, withIntermediateDirectories: true)
+        try Data("blocked".utf8).write(to: fixture.support.appending(path: "signatures"))
+
+        #expect(throws: (any Error).self) { try install(fixture) }
+
+        #expect(FileManager.default.fileExists(atPath: fixture.deployedDylib.path))
+        #expect(try fixture.modifications.paths().map(\.path) == [fixture.app.standardizedFileURL.path])
+        #expect(try DeploymentContent.readBuild(at: DeploymentContent.record(beside: fixture.deployedVersion)) == nil)
+    }
+
+    @Test("Installing another Steam preserves the disconnected installation")
+    func tracksBothInstallations() async throws {
+        let work = try scratchDirectory("install-two-bundles")
+        defer { try? FileManager.default.removeItem(at: work) }
+        let first = try await fixture(into: work)
+        let other = work.appending(path: "other/Steam.app")
+        try FileManager.default.createDirectory(at: other.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: first.app, to: other)
+        let second = Fixture(work: work, app: other, payload: first.payload, support: first.support)
+        _ = try install(first)
+        try FileManager.default.moveItem(at: first.app.deletingLastPathComponent(), to: work.appending(path: "disconnected"))
+
+        _ = try install(second)
+
+        let recorded = Set(try first.modifications.paths().map(\.path))
+        let expected = Set([first.app.standardizedFileURL.path, second.app.standardizedFileURL.path])
+        #expect(recorded == expected)
     }
 
     @Test("An older package is refused before any installed files change")

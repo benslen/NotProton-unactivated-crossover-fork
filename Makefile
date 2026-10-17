@@ -1,8 +1,10 @@
 CC       := clang
 ARCH     := arm64
 MIN_VER  := 15.0
+GLASS_SDK := 26.0
+AVAIL    := -Werror=unguarded-availability-new
 
-CFLAGS   := -arch $(ARCH) -mmacosx-version-min=$(MIN_VER) \
+CFLAGS   := -arch $(ARCH) -mmacosx-version-min=$(MIN_VER) $(AVAIL) \
             -std=c17 -O2 -Wall -Wextra -Wno-unused-parameter \
             -fPIC -MMD -MP \
             -Idylib -Ivendor -Ivendor/dobby/include
@@ -33,10 +35,12 @@ SRCS := \
 	dylib/hooks/hook_compat.c \
 	dylib/hooks/hook_shortcut.c \
 	dylib/hooks/hook_icon.c \
+	dylib/hooks/hook_shortcut_bundle.c \
 	dylib/hooks/hook_webui.c \
 	dylib/hooks/hook_webpatch.c \
 	dylib/hooks/hook_spawn.c \
 	dylib/hooks/hook_launch.c \
+	dylib/hooks/hook_activate.c \
 	dylib/feats/compat.c \
 	dylib/feats/webui.c \
 	dylib/feats/compatsvc.c \
@@ -64,7 +68,7 @@ DEPS := $(OBJS:.o=.d)
         tests-list overlay-shim overlay-shim-install overlay-shim-tests \
         overlay-shim-bench iconmaker icon \
         appinfo helpers-install ntdll-resolve bridge runcheck compatcheck \
-        compatsvc-check scriptcheck envcheck buildcheck settingscheck routecheck bridgecheck gamedrivecheck launchercheck launch-shell FORCE
+        compatsvc-check shortcutcheck scriptcheck envcheck buildcheck settingscheck routecheck bridgecheck gamedrivecheck launchercheck launch-shell activatecheck FORCE
 
 APP_PAYLOAD := app/Sources/NotProtonApp/Resources/payload
 
@@ -124,6 +128,16 @@ launchercheck:
 	@if [ ! -f dylib/tests/launchercheck.sh ]; then $(call SKIP,launchercheck,dylib/tests/launchercheck.sh); exit 0; fi; \
 	sh dylib/tests/launchercheck.sh dylib/feats/compat_run.sh
 
+.PHONY: mincheck
+mincheck:
+	@sh dylib/tests/mincheck.sh "$(APP_BUNDLE)" "$(MIN_VER)" "$(GLASS_SDK)"
+
+.PHONY: l10ncheck
+l10ncheck:
+	@bin=$$(swift build --package-path app -c release --show-bin-path); \
+	python3 dylib/tests/l10ncheck.py app/Sources/NotProtonApp/Resources/Localization/Localizable.xcstrings \
+		"$$bin/../../Intermediates.noindex/NotProtonApp.build/$$(basename "$$bin")" zh-Hans
+
 # runcheck owns compat_run.sh, whose warnings wait for a change that can move
 # the embedded __text baseline
 SCRIPTS := $(shell git ls-files '*.sh' 2>/dev/null | grep -v '^dylib/feats/compat_run\.sh$$')
@@ -154,6 +168,18 @@ compatsvc-check:
 	mkdir -p $(OUT_DIR) && \
 	$(TEST_CC) -o $(COMPATSVC_CHECK) dylib/tests/compatsvc-check.c && \
 	$(COMPATSVC_CHECK)
+
+SHORTCUT_BUNDLE_CHECK := $(OUT_DIR)/shortcut-bundle-check
+SHORTCUTCHECK         := $(OUT_DIR)/shortcutcheck
+
+shortcutcheck: $(OUT_DIR)/iconmaker
+	@if [ ! -f dylib/tests/shortcutcheck.c ]; then $(call SKIP,shortcutcheck,dylib/tests/shortcutcheck.c); exit 0; fi; \
+	mkdir -p $(OUT_DIR) && \
+	$(TEST_CC) -o $(SHORTCUT_BUNDLE_CHECK) dylib/tests/shortcut-bundle-check.c && \
+	$(SHORTCUT_BUNDLE_CHECK) && \
+	$(TEST_CC) -o $(SHORTCUTCHECK) dylib/tests/shortcutcheck.c && \
+	$(SHORTCUTCHECK) && \
+	python3 dylib/tests/shortcut-launch.py $(OUT_DIR)/iconmaker
 
 sigcheck:
 	@if [ ! -f dylib/tests/sigcheck.py ]; then $(call SKIP,sigcheck,dylib/tests/sigcheck.py); exit 0; fi; \
@@ -267,6 +293,14 @@ launch-shell:
 	$(TEST_CC) -O1 -o $(LAUNCH_SHELL) dylib/tests/launch-shell.c && \
 	$(LAUNCH_SHELL)
 
+ACTIVATECHECK := $(OUT_DIR)/activatecheck
+
+activatecheck:
+	@if [ ! -f dylib/tests/activatecheck.c ]; then $(call SKIP,activatecheck,dylib/tests/activatecheck.c); exit 0; fi; \
+	mkdir -p $(OUT_DIR) && \
+	$(TEST_CC) -O1 -o $(ACTIVATECHECK) dylib/tests/activatecheck.c -framework AppKit -lobjc && \
+	$(ACTIVATECHECK)
+
 SPAWN_ENV := $(OUT_DIR)/spawn-env
 
 spawn-env:
@@ -322,6 +356,8 @@ panel-behavior:
 	node $(PANEL_TESTS)/launch-options.js $(OUT_DIR)/panel-emit && \
 	node $(PANEL_TESTS)/shell.js $(OUT_DIR)/panel-emit && \
 	node $(PANEL_TESTS)/migration.js $(OUT_DIR)/panel-emit && \
+	node $(PANEL_TESTS)/localization.js $(OUT_DIR)/panel-emit && \
+	node $(PANEL_TESTS)/fex.js $(OUT_DIR)/panel-emit && \
 	echo "==> panel behavior: renders as expected, no stale arguments"
 
 CX_ROOT ?= /Applications/CrossOver Preview.app
@@ -341,7 +377,7 @@ $(ARM64_DYLIB): $(OBJS)
 
 $(X86_STUB): dylib/stub_x86_64.c
 	@mkdir -p $(dir $@)
-	$(CC) -arch x86_64 -mmacosx-version-min=$(MIN_VER) \
+	$(CC) -arch x86_64 -mmacosx-version-min=$(MIN_VER) $(AVAIL) \
 		-dynamiclib -install_name @rpath/notproton.dylib \
 		-o $@ $<
 
@@ -365,7 +401,7 @@ OVERLAY_SHIM_SRC   := overlay-shim/overlay_shim.m
 OVERLAY_SHIM_ARM   := $(OUT_DIR)/overlay-shim.arm64.dylib
 OVERLAY_SHIM_X86   := $(OUT_DIR)/overlay-shim.x86_64.dylib
 OVERLAY_SHIM       := $(OUT_DIR)/overlay-shim.dylib
-OVERLAY_SHIM_FLAGS := -mmacosx-version-min=$(MIN_VER) -dynamiclib -O2 -Wall -Wextra \
+OVERLAY_SHIM_FLAGS := -mmacosx-version-min=$(MIN_VER) $(AVAIL) -dynamiclib -O2 -Wall -Wextra \
                       -install_name @rpath/overlay-shim.dylib \
                       -framework Metal -framework QuartzCore \
                       -framework CoreGraphics -framework CoreFoundation
@@ -430,13 +466,15 @@ ICONMAKER := $(OUT_DIR)/iconmaker
 
 iconmaker: $(ICONMAKER)
 
-$(ICONMAKER): helpers/iconmaker.swift dylib/util/peicon.c dylib/util/peicon.h
+$(ICONMAKER): helpers/iconmaker.swift helpers/iconmaker.h dylib/util/peicon.c dylib/util/peicon.h helpers/shortcuts.h helpers/shortcuts.c
 	@mkdir -p $(OUT_DIR)
-	$(CC) -c -arch $(ARCH) -mmacosx-version-min=$(MIN_VER) -std=c17 -O2 \
+	$(CC) -c -arch $(ARCH) -mmacosx-version-min=$(MIN_VER) $(AVAIL) -std=c17 -O2 \
 		-Wall -Wextra -o $(OUT_DIR)/peicon-host.o dylib/util/peicon.c
+	$(CC) -c -arch $(ARCH) -mmacosx-version-min=$(MIN_VER) $(AVAIL) -std=c17 -O2 \
+		-Wall -Wextra -o $(OUT_DIR)/shortcuts-host.o helpers/shortcuts.c
 	swiftc -O -target $(ARCH)-apple-macos$(MIN_VER) \
-		-framework AppKit -import-objc-header dylib/util/peicon.h \
-		-o $@ helpers/iconmaker.swift $(OUT_DIR)/peicon-host.o
+		-framework AppKit -import-objc-header helpers/iconmaker.h \
+		-o $@ helpers/iconmaker.swift $(OUT_DIR)/peicon-host.o $(OUT_DIR)/shortcuts-host.o
 	@echo "==> Built $@"
 
 APPINFO := $(OUT_DIR)/appinfo
@@ -463,8 +501,8 @@ dobby:
 		-G "Unix Makefiles"
 	$(MAKE) -C $(DOBBY_DIR) -j$(shell sysctl -n hw.ncpu)
 
-STEAM_APP    := /Applications/Steam.app
-DEPLOY_DST   := $(STEAM_APP)/Contents/MacOS/notproton.dylib
+STEAM_APP    ?= $$(p=$$(defaults read com.notproton.NotProton steamAppPath 2>/dev/null); printf '%s' "$${p:-/Applications/Steam.app}")
+DEPLOY_DST    = $(STEAM_APP)/Contents/MacOS/notproton.dylib
 INSTALL_DST  := $(SUPPORT_DIR)/notproton.dylib
 
 dylib-install: $(TARGET)
@@ -569,7 +607,7 @@ $(ICON_CAR): $(ICONGEN)
 	$(ICONGEN) "$(ICON_DOC)"
 	@mkdir -p "$(ICON_DIR)"
 	xcrun actool "$(ICON_DOC)" --compile "$(ICON_DIR)" --platform macosx \
-		--minimum-deployment-target 26.0 --app-icon NotProton \
+		--minimum-deployment-target 15.0 --app-icon NotProton \
 		--output-partial-info-plist "$(ICON_DIR)/partial.plist" >/dev/null
 	@echo "==> Built $@"
 
@@ -589,7 +627,12 @@ app: app-payload $(ICON_CAR)
 		"$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework"
 	install_name_tool -add_rpath @executable_path/../Frameworks \
 		"$(APP_BUNDLE)/Contents/MacOS/NotProtonApp"
+	xcrun vtool -set-build-version macos $(MIN_VER) "$$(xcrun --sdk macosx --show-sdk-version)" \
+		-replace -output "$(APP_BUNDLE)/Contents/MacOS/NotProtonApp" \
+		"$(APP_BUNDLE)/Contents/MacOS/NotProtonApp"
 	cp -R "$$(swift build --package-path app -c release --show-bin-path)/NotProtonApp_NotProtonApp.bundle" \
+		"$(APP_BUNDLE)/Contents/Resources/"
+	cp -R "$(APP_BUNDLE)/Contents/Resources/NotProtonApp_NotProtonApp.bundle/Contents/Resources/"*.lproj \
 		"$(APP_BUNDLE)/Contents/Resources/"
 	cp "$(ICON_DIR)/Assets.car" "$(ICON_DIR)/NotProton.icns" \
 		"$(APP_BUNDLE)/Contents/Resources/"

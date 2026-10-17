@@ -14,7 +14,8 @@ let hasPayload = FileManager.default.fileExists(
     atPath: packageRoot.appendingPathComponent(payloadPath).path)
 let package = Package(
     name: "NotProtonApp",
-    platforms: [.macOS("26.0")],
+    defaultLocalization: "en",
+    platforms: [.macOS("15.0")],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
     ],
@@ -24,6 +25,7 @@ let package = Package(
             dependencies: [.product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/NotProtonApp",
             resources: (hasPayload ? [.copy("Resources/payload")] : []) + [
+                .process("Resources/Localization"),
                 .copy("Resources/payload.manifest"),
                 .copy("Resources/valve-packages.manifest"),
                 .copy("Resources/detour2.bin"),
@@ -38,6 +40,11 @@ let package = Package(
                 .copy("Resources/detour2-fex-41069.bin"),
                 .copy("Resources/detour32-fex-41069.bin"),
                 .copy("Resources/detour64-fex-41069.bin"),
+                .copy("Resources/detour2-41073.bin"),
+                .copy("Resources/detour32-41073.bin"),
+                .copy("Resources/detour2-fex-41073.bin"),
+                .copy("Resources/detour32-fex-41073.bin"),
+                .copy("Resources/detour64-fex-41073.bin"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

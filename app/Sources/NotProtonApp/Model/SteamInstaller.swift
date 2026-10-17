@@ -17,17 +17,17 @@ enum InstallPhase: Sendable {
 
     var label: String {
         switch self {
-        case .checkingPayload: "Preparing"
-        case .stagingBridge: "Staging components"
-        case .preflight: "Checking Steam"
-        case .stoppingClient: "Stopping Steam"
-        case .copyingDylib: "Installing"
-        case .installingSignatures: "Installing signatures"
-        case .installingOverlayShim: "Installing components"
-        case .settingInsert: "Configuring Steam"
-        case .signing: "Signing"
-        case .registering: "Finishing up"
-        case .finished: "Done"
+        case .checkingPayload: String(localized: "Preparing")
+        case .stagingBridge: String(localized: "Staging components")
+        case .preflight: String(localized: "Checking Steam")
+        case .stoppingClient: String(localized: "Stopping Steam")
+        case .copyingDylib: String(localized: "Installing")
+        case .installingSignatures: String(localized: "Installing signatures")
+        case .installingOverlayShim: String(localized: "Installing components")
+        case .settingInsert: String(localized: "Configuring Steam")
+        case .signing: String(localized: "Signing")
+        case .registering: String(localized: "Finishing up")
+        case .finished: String(localized: "Done")
         }
     }
 }
@@ -42,7 +42,7 @@ struct InstallOutcome: Sendable {
 }
 
 enum SteamInstaller {
-    static let step = "Install NotProton"
+    static let step = String(localized: "Install NotProton")
 
     typealias ClientStopper = @Sendable (URL, () -> Void) throws -> Bool
     typealias BundleRegistrar = @Sendable (URL) -> Void
@@ -66,6 +66,8 @@ enum SteamInstaller {
         backups: URL = SupportPaths.backups,
         compatTools: URL = SupportPaths.Steam.compatTools,
         holdingInstallationLock: Bool = false,
+        lockFolder: URL = SupportPaths.applicationSupport,
+        modifications: SteamModifications = .shared,
         runnerIsRunning: @Sendable (URL) -> Bool = { RunnerInstaller.isRunning(from: $0) },
         verifyRunner: (RunnerBuild, URL) throws -> Void = RunnerInstaller.verifyClone,
         patchRunner: (RunnerBuild, URL, URL) throws -> Void = { build, root, bridge in
@@ -86,10 +88,11 @@ enum SteamInstaller {
         let dylib = app.appending(path: "Contents/MacOS/\(SupportPaths.dylibName)")
         try assertBundleIsPresent(app)
         try assertInsertIsDeployedOrAbsent(at: plist, dylib: dylib)
-        let installationLock = holdingInstallationLock ? -1 : try DeploymentContent.acquireInstallationLock(for: app)
-        defer { if installationLock >= 0 { close(installationLock) } }
+        let installationLock = holdingInstallationLock
+            ? nil : try DeploymentContent.acquireInstallationLock(in: lockFolder, steamFolder: app.deletingLastPathComponent())
+        defer { installationLock?.release() }
         guard let dylibHashes = try MachOBuild.hashesIgnoringSignature(of: payload.dylib) else {
-            throw StepFailure(step: step, detail: "The bundled NotProton dylib is invalid.")
+            throw StepFailure(step: step, detail: String(localized: "The bundled NotProton dylib is invalid."))
         }
         let build = DeploymentContent.Build(version: version, builtAt: payload.builtAt,
                                             dylibHashes: dylibHashes)
@@ -105,11 +108,11 @@ enum SteamInstaller {
         let content = try DeploymentContent.inspect(files: files, bundled: build, installed: previousBuild,
                                                    legacyVersion: SteamBundle.deployedVersion(at: deployedVersion))
         guard content != .newerInstalled else {
-            throw StepFailure(step: step, detail: "A newer NotProton build is installed. Use that build to update or repair the installed files.")
+            throw StepFailure(step: step, detail: String(localized: "A newer NotProton build is installed. Use that build to update or repair the installed files."))
         }
         func refuseRunningRunners() throws {
             for id in RunnerStore.clonedBuilds(in: runners) where runnerIsRunning(SupportPaths.runnerRoot(forBuild: id, runners: runners)) {
-                throw StepFailure(step: step, detail: "A game or Wine tool is running on build \(id). Quit it before updating NotProton.")
+                throw StepFailure(step: step, detail: String(localized: "A game or Wine tool is running on build \(id). Quit it before updating NotProton."))
             }
         }
         try refuseRunningRunners()
@@ -117,6 +120,7 @@ enum SteamInstaller {
         for build in builds {
             try verifyRunner(build, SupportPaths.clonedRoot(forBuild: build.id, runners: runners))
         }
+        try modifications.mark(app)
         let patching = try needsPatching(plist: plist, dylib: dylib, shipping: payload.dylib, app: app)
         let replacingFiles = try files.contains {
             try $0.needsClientStopped && !$0.matches() && FileManager.default.fileExists(atPath: $0.destination.path(percentEncoded: false))
@@ -183,14 +187,13 @@ enum SteamInstaller {
             AppLog.note("install: bundle declares \(landed ?? "no insert")")
             throw StepFailure(
                 step: step,
-                detail: "Steam is set up to inject a different dylib. Please repair Steam "
-                    + "before installing NotProton."
+                detail: String(localized: "Steam is set up to inject a different dylib. Please repair Steam before installing NotProton.")
             )
         }
 
         let remaining = try files.filter { try !$0.matches() }.map(\.name)
         guard remaining.isEmpty else {
-            throw StepFailure(step: step, detail: "These files did not update: \(remaining.joined(separator: ", ")).")
+            throw StepFailure(step: step, detail: String(localized: "These files did not update: \(remaining.joined(separator: ", "))."))
         }
 
         report(.finished)
@@ -211,7 +214,7 @@ enum SteamInstaller {
     ) throws {
         guard isCurrent(outcome.version) else {
             throw StepFailure(step: step,
-                              detail: "Installed content could not be verified. Refresh the Status view for the files that still need attention.")
+                              detail: String(localized: "Installed content could not be verified. Refresh the Status view for the files that still need attention."))
         }
         try write(outcome.version, to: deployedVersion)
         try atomicReplace(DeploymentContent.record(beside: deployedVersion),
@@ -244,7 +247,7 @@ enum SteamInstaller {
         guard FileManager.default.fileExists(atPath: app.path(percentEncoded: false)) else {
             throw StepFailure(
                 step: step,
-                detail: "\(app.path(percentEncoded: false)) is not there, so there is nothing to install into."
+                detail: String(localized: "\(app.path(percentEncoded: false)) is not there, so there is nothing to install into.")
             )
         }
     }
@@ -257,8 +260,7 @@ enum SteamInstaller {
         guard foreign.isEmpty else {
             throw StepFailure(
                 step: step,
-                detail: "Another dylib is present. Repair your Steam install before "
-                    + "installing NotProton."
+                detail: String(localized: "Another dylib is present. Repair your Steam install before installing NotProton.")
             )
         }
     }
@@ -284,25 +286,23 @@ enum SteamInstaller {
     }
 
     private static let mismatchAcrossAccounts =
-        "Steam has a different copy of NotProton, installed by another account on this Mac. "
-        + "Update NotProton from that account, then try again."
+        String(localized: "Steam has a different copy of NotProton, installed by another account on this Mac. Update NotProton from that account, then try again.")
 
     private static let unpatchedAcrossAccounts =
-        "Steam has not been set up for NotProton, and this account cannot change it. "
-        + "Install from the account that owns Steam."
+        String(localized: "Steam has not been set up for NotProton, and this account cannot change it. Install from the account that owns Steam.")
 
     static func assertBundleIsWritable(_ app: URL) throws {
         let directory = app.appending(path: "Contents/MacOS")
-        let probe = directory.appending(path: ".notproton-write-probe")
+        let probe = directory.appending(path: ".notproton-write-probe-\(UUID().uuidString)")
         do {
-            try Data("probe".utf8).write(to: probe)
+            try Data("probe".utf8).write(to: probe, options: .withoutOverwriting)
             try FileManager.default.removeItem(at: probe)
         } catch let error as NSError where error.code == NSFileWriteNoPermissionError {
             throw WriteRefused(path: directory.path(percentEncoded: false))
         } catch {
             throw StepFailure(
                 step: step,
-                detail: "\(directory.path(percentEncoded: false)) could not be written. "
+                detail: String(localized: "\(directory.path(percentEncoded: false)) could not be written. ")
                     + error.localizedDescription
             )
         }
@@ -342,7 +342,7 @@ enum SteamInstaller {
         guard var dict = SteamBundle.readInfoPlist(at: plist) else {
             throw StepFailure(
                 step: step,
-                detail: "\(plist.path(percentEncoded: false)) could not be read as a property list."
+                detail: String(localized: "\(plist.path(percentEncoded: false)) could not be read as a property list.")
             )
         }
 
@@ -355,13 +355,41 @@ enum SteamInstaller {
 
     static func adHocSign(_ url: URL, step: String = step) throws {
         let path = url.path(percentEncoded: false)
-        let result = try Shell.run("/usr/bin/codesign", ["-f", "-s", "-", path])
+        var result = try Shell.run("/usr/bin/codesign", ["-f", "-s", "-", path])
+        // Fixes codesign refusing a Steam.app that carries Finder info or a resource fork.
+        if !result.succeeded, result.stderr.contains("detritus not allowed") {
+            clearFinderData(in: enclosingBundle(of: url))
+            result = try Shell.run("/usr/bin/codesign", ["-f", "-s", "-", path])
+        }
         guard result.succeeded else {
             throw StepFailure(
                 step: step,
-                detail: "\(path) could not be signed. "
+                detail: String(localized: "\(path) could not be signed. ")
                     + result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             )
+        }
+    }
+
+    static func enclosingBundle(of url: URL) -> URL {
+        var candidate = url
+        while candidate.pathComponents.count > 1 {
+            if candidate.pathExtension == "app" { return candidate }
+            candidate = candidate.deletingLastPathComponent()
+        }
+        return url
+    }
+
+    static func clearFinderData(in root: URL) {
+        var paths = [root.path(percentEncoded: false)]
+        if let walk = FileManager.default.enumerator(atPath: paths[0]) {
+            while let relative = walk.nextObject() as? String {
+                paths.append(root.appending(path: relative).path(percentEncoded: false))
+            }
+        }
+        for path in paths {
+            for name in ["com.apple.FinderInfo", "com.apple.ResourceFork"] {
+                removexattr(path, name, XATTR_NOFOLLOW)
+            }
         }
     }
 

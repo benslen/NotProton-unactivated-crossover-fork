@@ -111,6 +111,12 @@ jobs:
       - name: Build the app
         run: make app
 
+      - name: Check the minimum macOS version
+        run: make -s mincheck
+
+      - name: Check the translations
+        run: make -s l10ncheck
+
       - name: Run the hermetic C suites
         run: |
           make -s sigcheck
@@ -119,8 +125,10 @@ jobs:
           make -s peicon-fixtures
           make -s panel-behavior
           make -s spawn-env
+          make -s activatecheck
           make -s compatcheck
           make -s compatsvc-check
+          make -s shortcutcheck
           make -s launch-shell
           make -s envcheck
           make -s buildcheck
